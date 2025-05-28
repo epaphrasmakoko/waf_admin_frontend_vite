@@ -1,0 +1,26 @@
+{
+  "name": "waf_admin_frontend_vite",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@apollo/client": "^3.13.8",
+    "@tailwindcss/vite": "^4.1.6",
+    "@vue/apollo-composable": "^4.2.2",
+    "chart.js": "^4.4.9",
+    "graphql": "^16.11.0",
+    "tailwindcss": "^4.1.6",
+    "vue": "^3.5.13",
+    "vue-chartjs": "^5.3.2",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.3",
+    "vite": "^6.3.5"
+  }
+}
