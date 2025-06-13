@@ -204,7 +204,7 @@
 </template>
 
 <script>
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { useQuery, useMutation } from '@vue/apollo-composable'
 import { gql } from '@apollo/client/core'
 import HeaderComponent from '../components/HeaderComponent.vue'
@@ -280,6 +280,7 @@ const GENERATE_REPORT_MUTATION = gql`
     $asset: String
     $attackType: String
     $userAgent: String
+    $indicatorsOfCompromise: JSONString
   ) {
     generateForensicReport(
       sourceIp: $sourceIp
@@ -288,6 +289,7 @@ const GENERATE_REPORT_MUTATION = gql`
       asset: $asset
       attackType: $attackType
       userAgent: $userAgent
+      indicatorsOfCompromise: $indicatorsOfCompromise
     ) {
       success
       message
@@ -333,7 +335,56 @@ export default {
       { fetchPolicy: 'network-only' }
     )
 
-    const { mutate: generateReportMutation } = useMutation(GENERATE_REPORT_MUTATION)
+    const { mutate: generateReportMutation } = useMutation(GENERATE_REPORT_MUTATION, {
+      update: (cache, { data }) => {
+        console.log('Mutation update received:', data)
+      },
+      onError: (error) => {
+        console.error('Mutation failed:', error)
+        if (error.networkError) {
+          console.log('Network Error Response:', error.networkError.response)
+          console.log('Network Error Text:', error.networkError.result)
+        }
+      },
+      onDone: ({ data, errors }) => {
+        console.log('Mutation completed:', { data, errors })
+      },
+    })
+
+    const indicatorsOfCompromise = computed(() => {
+      console.log('Computing IOCs with forensicData length:', forensicData.value.length)
+      const iocs = {
+        maliciousIpAddresses: new Set(),
+        payloadSignatures: new Set(),
+        targetedUrls: new Set(),
+        userAgents: new Set()
+      }
+
+      if (forensicData.value.length === 0) {
+        console.warn('No forensic data available for IOC computation')
+        return iocs
+      }
+
+      forensicData.value.forEach(entry => {
+        if (entry.clientIp) iocs.maliciousIpAddresses.add(entry.clientIp)
+        if (entry.requestUrl) iocs.targetedUrls.add(entry.requestUrl.split('?')[0])
+        if (entry.userAgent) iocs.userAgents.add(entry.userAgent)
+        if (entry.inputs && entry.inputs.length > 0) {
+          entry.inputs.forEach(input => {
+            if (input.scoreXss > 0.1 || input.scoreCmd > 0.1) {
+              iocs.payloadSignatures.add(input.value || 'unknown payload')
+            }
+          })
+        }
+      })
+
+      return {
+        maliciousIpAddresses: Array.from(iocs.maliciousIpAddresses),
+        payloadSignatures: Array.from(iocs.payloadSignatures),
+        targetedUrls: Array.from(iocs.targetedUrls),
+        userAgents: Array.from(iocs.userAgents)
+      }
+    })
 
     const fetchForensicData = async () => {
       loading.value = true
@@ -350,6 +401,7 @@ export default {
           page: currentPage.value,
           perPage: perPage.value
         }
+        console.log('Fetching forensic data with variables:', queryVariables.value)
         await refetch(queryVariables.value)
         forensicData.value = result?.value?.forensicData?.entries || []
         totalCount.value = result?.value?.forensicData?.totalCount || 0
@@ -370,20 +422,34 @@ export default {
       loading.value = true
       reportGenerated.value = false
       reportMessage.value = ''
+
       try {
+        console.log('Current filters state at generateReport:', filters.value)
+
+        const iocs = indicatorsOfCompromise.value
+        const iocsString = JSON.stringify(iocs) || '{}'
+        console.log('Computed IOCs:', iocs)
+        console.log('Stringified IOCs sent to mutation:', iocsString)
+
         const variables = {
           sourceIp: filters.value.sourceIp || undefined,
           startTime: filters.value.startTime ? new Date(filters.value.startTime).toISOString() : undefined,
           endTime: filters.value.endTime ? new Date(filters.value.endTime).toISOString() : undefined,
           asset: filters.value.asset || undefined,
           attackType: filters.value.attackType || undefined,
-          userAgent: filters.value.userAgent === 'custom' ? filters.value.customUserAgent : filters.value.userAgent || undefined
+          userAgent: filters.value.userAgent === 'custom' ? filters.value.customUserAgent || undefined : filters.value.userAgent || undefined,
+          indicatorsOfCompromise: iocsString
         }
-        console.log('Generating report with variables:', variables)
-        const { data } = await generateReportMutation({ variables })
-        if (data.generateForensicReport.success) {
+
+        console.log('Variables sent to mutation, including IOCs:', variables)
+
+        const response = await generateReportMutation(variables)
+
+        const data = response?.data
+        if (data?.generateForensicReport?.success) {
           reportMessage.value = data.generateForensicReport.message
           reportGenerated.value = true
+
           if (data.generateForensicReport.pdfContent) {
             const binaryString = window.atob(data.generateForensicReport.pdfContent)
             const len = binaryString.length
@@ -391,22 +457,27 @@ export default {
             for (let i = 0; i < len; i++) {
               bytes[i] = binaryString.charCodeAt(i)
             }
+
             const blob = new Blob([bytes], { type: 'application/pdf' })
             const url = window.URL.createObjectURL(blob)
             const a = document.createElement('a')
             a.href = url
-            a.download = `forensic_report_${new Date().toISOString().split('T')[0]}.pdf`
-            document.body.appendChild(a) // Append to body to ensure it works
+            a.download = `SmartWAF-forensic_report_${new Date().toISOString().split('T')[0]}.pdf`
+            document.body.appendChild(a)
             a.click()
-            document.body.removeChild(a) // Clean up
+            document.body.removeChild(a)
             window.URL.revokeObjectURL(url)
           }
         } else {
-          reportMessage.value = data.generateForensicReport.message || 'Report generation failed'
+          reportMessage.value = data?.generateForensicReport?.message || 'Report generation failed'
           reportGenerated.value = false
         }
       } catch (e) {
         console.error('Error generating report:', e)
+        if (e.networkError) {
+          console.log('Network Error Response:', e.networkError.response)
+          console.log('Network Error Text:', e.networkError.result)
+        }
         reportMessage.value = `Error generating report: ${e.message}`
         reportGenerated.value = false
       } finally {
